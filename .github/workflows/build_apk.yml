@@ -1,0 +1,42 @@
+name: Build Kivy Android APK
+
+on:
+  push:
+    branches:
+      - main # or your main branch name, e.g., master
+  pull_request:
+    branches:
+      - main # or your main branch name
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10' # Use a Python version compatible with Kivy/Buildozer
+
+    - name: Install Buildozer
+      run: pip install buildozer
+
+    - name: Install dependencies for Buildozer
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libssl-dev libffi-dev libsqlite3-dev liblzma-dev libbz2-dev
+
+    - name: Build Android Debug APK
+      # The first build will download SDK/NDK and take a long time.
+      # Subsequent builds will be faster due to caching.
+      run: buildozer android debug
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: FaceApp-APK
+        path: bin/*.apk # Path to the generated APK file
+        retention-days: 7 # How long to keep the artifact
