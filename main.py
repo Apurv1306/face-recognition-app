@@ -35,11 +35,9 @@ from kivy.uix.textinput import TextInput
 # Configuration constants
 # ---------------------------------------------------------------------------
 
-KNOWN_FACES_DIR: str = "known_faces"
-# Changed SAMPLES_PER_USER to 10 to match the user's reference for new registration.
+# KNOWN_FACES_DIR: str = "known_faces" # This will now be dynamically set
 SAMPLES_PER_USER: int = 10
 FRAME_REDUCE_FACTOR: float = 0.5
-# Updated RECOGNITION_INTERVAL to 5 minutes (300 seconds) as requested.
 RECOGNITION_INTERVAL: int = 5 * 60  # seconds between repeated recognitions of same face
 AUDIO_FILE: str = "thank_you.mp3"
 TICK_ICON_PATH: str = "tick.png"
@@ -49,7 +47,6 @@ TICK_ICON_PATH: str = "tick.png"
 GOOGLE_FORM_VIEW_URL: str = (
     "https://docs.google.com/forms/u/0/d/e/1FAIpQLScO9FVgTOXCeuw210SK6qx2fXiouDqouy7TTuoI6UD80ZpYvQ/formResponse"
 )
-# CORRECTED: Removed the '/u/0/' part from the URL which was causing the 404 error.
 GOOGLE_FORM_POST_URL: str = (
     "https://docs.google.com/forms/u/0/d/e/1FAIpQLScO9FVgTOXCeuw210SK6qx2fXiouDqouy7TTuoI6UD80ZpYvQ/formResponse"
 )
@@ -94,8 +91,11 @@ class FaceApp(App):
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        # Ensure face directory exists before any read/write.
-        ensure_dir(KNOWN_FACES_DIR)
+        
+        # Set the known faces directory to a writable location on mobile devices
+        self._known_faces_dir = Path(self.user_data_dir) / "known_faces"
+        ensure_dir(self._known_faces_dir)
+        Logger(f"[INFO] Known faces directory set to: {self._known_faces_dir}")
 
         # Haar cascade for face detection.
         self.face_cascade = cv2.CascadeClassifier(
@@ -104,7 +104,7 @@ class FaceApp(App):
         # Check if the cascade classifier loaded successfully
         if self.face_cascade.empty():
             Logger(f"[ERROR] Failed to load Haar cascade classifier. "
-                   f"Path tried: {cv2.data.haascades + 'haarcascade_frontalface_default.xml'}. "
+                   f"Path tried: {cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'}. "
                    f"Please ensure 'haarcascade_frontalface_default.xml' is present and accessible, "
                    f"and that opencv-python is correctly installed.")
             # It's critical to exit or handle this gracefully, as face detection won't work.
@@ -240,8 +240,27 @@ class FaceApp(App):
             Line(width=1.5, rectangle=(instance.x, instance.y, instance.width, instance.height))
 
     def _show_popup(self, title: str, content: BoxLayout, *, size=(0.8, 0.5)) -> Popup:  # noqa: D401
-        """Helper to display a Kivy popup."""
-        popup = Popup(title=title, content=content, size_hint=size, auto_dismiss=False)
+        """Helper to display a Kivy popup, now with a back button."""
+        # Create a new BoxLayout to hold the original content and the back button
+        main_content_layout = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(10))
+        
+        # Add the original content to this new layout
+        main_content_layout.add_widget(content)
+
+        # Add a back button
+        back_button = Button(
+            text="Back to Camera",
+            size_hint=(1, None),
+            height=dp(40),
+            background_color=(0.5, 0.5, 0.5, 1) # Grey color for back button
+        )
+        main_content_layout.add_widget(back_button)
+
+        popup = Popup(title=title, content=main_content_layout, size_hint=size, auto_dismiss=False)
+        
+        # Bind the back button to dismiss the popup
+        back_button.bind(on_press=popup.dismiss)
+        
         popup.open()
         return popup
 
@@ -378,7 +397,8 @@ class FaceApp(App):
                         (0, 255, 0),
                         2,
                     )
-                    self._overlay_tick(frame, x_full, y_full, w_full, h_full)
+                    # Call the new function to overlay tick next to name
+                    self._overlay_tick_next_to_name(frame, x_full, y_full - 10, name.title(), emp_id, 0.7, 2)
                 else:  # Unknown face.
                     cv2.rectangle(
                         frame, (x_full, y_full), (x_full + w_full, y_full + h_full), (0, 0, 255), 2
@@ -428,7 +448,7 @@ class FaceApp(App):
         label_map: Dict[int, Tuple[str, str]] = {}
         label_id = 0
 
-        for file in sorted(os.listdir(KNOWN_FACES_DIR)):
+        for file in sorted(os.listdir(self._known_faces_dir)):
             if not file.lower().endswith((".jpg", ".png")):
                 continue
             try:
@@ -439,7 +459,7 @@ class FaceApp(App):
                 Logger(f"[WARN] Skipping unrecognised filename format: {file}")
                 continue
 
-            img_path = Path(KNOWN_FACES_DIR) / file
+            img_path = self._known_faces_dir / file
             img_gray = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
             if img_gray is None:
                 continue
@@ -499,7 +519,7 @@ class FaceApp(App):
             popup.dismiss()
             threading.Thread(
                 target=self._capture_samples,
-                args=(name, emp_id, False),
+                args=(name, emp_id, False), # False for new registration
                 daemon=True,
                 name="CaptureSamples(New)",
             ).start()
@@ -606,7 +626,7 @@ class FaceApp(App):
                 name_for_capture = self.pending_names.get(emp_id)
                 threading.Thread(
                     target=self._capture_samples,
-                    args=(name_for_capture, emp_id, True, 5), # Capture 5 samples for update
+                    args=(name_for_capture, emp_id, True, 5), # True for update, capture 5 samples
                     daemon=True,
                     name="CaptureSamples(Update)",
                 ).start()
@@ -654,7 +674,8 @@ class FaceApp(App):
             return
 
         count_target = sample_count if sample_count else SAMPLES_PER_USER
-        pattern = str(Path(KNOWN_FACES_DIR) / f"{name}_{emp_id}_*.jpg")
+        # Use self._known_faces_dir here
+        pattern = str(self._known_faces_dir / f"{name}_{emp_id}_*.jpg")
         existing_files = glob.glob(pattern)
         start_index = len(existing_files)
         collected = 0
@@ -696,7 +717,8 @@ class FaceApp(App):
                 face_img_resized = cv2.resize(face_img, (200, 200))
                 # Use current logic for filename to ensure unique names and proper continuation for updates
                 filename = f"{name}_{emp_id}_{start_index + collected:03d}.jpg"
-                cv2.imwrite(str(Path(KNOWN_FACES_DIR) / filename), face_img_resized) # Save resized image
+                # Use self._known_faces_dir here
+                cv2.imwrite(str(self._known_faces_dir / filename), face_img_resized) # Save resized image
                 collected += 1
                 Logger(f"[INFO] Captured sample {collected}/{count_target} for {emp_id}")
                 
@@ -715,8 +737,11 @@ class FaceApp(App):
         Logger("[INFO] Capture complete – retraining recogniser…")
         self.recognizer, self.label_map = self._train_recognizer()
         Logger("[INFO] Update finished.")
-        # Show "Registration completed" message
-        Clock.schedule_once(lambda _dt: self._show_status_message("Registration completed!", 3, (0, 1, 0, 1)), 0)
+        # Show "Registration completed" or "Face updated" message based on 'updating' flag
+        if updating:
+            Clock.schedule_once(lambda _dt: self._show_status_message("Face updated!", 3, (0, 1, 0, 1)), 0)
+        else:
+            Clock.schedule_once(lambda _dt: self._show_status_message("Registration completed!", 3, (0, 1, 0, 1)), 0)
 
 
     # ------------------------------------------------------------------
@@ -828,7 +853,7 @@ class FaceApp(App):
 
     def _load_emails(self) -> Dict[str, str]:
         """Loads stored user email addresses from a JSON file."""
-        emails_file = Path(KNOWN_FACES_DIR) / "user_emails.json"
+        emails_file = self._known_faces_dir / "user_emails.json"
         if emails_file.is_file():
             try:
                 with emails_file.open("r", encoding="utf-8") as f:
@@ -840,53 +865,62 @@ class FaceApp(App):
     def _save_email(self, emp_id: str, email: str) -> None:
         """Saves a user's email address to the JSON file."""
         self.user_emails[emp_id] = email
-        with (Path(KNOWN_FACES_DIR) / "user_emails.json").open("w", encoding="utf-8") as f:
+        with (self._known_faces_dir / "user_emails.json").open("w", encoding="utf-8") as f:
             json.dump(self.user_emails, f, indent=2)
 
     # ------------------------------------------------------------------
     # Overlay helpers
     # ------------------------------------------------------------------
 
-    def _overlay_tick(self, frame: np.ndarray, x: int, y: int, w: int, h: int) -> None:
-        """Overlays a tick icon on the detected face."""
+    def _overlay_tick_next_to_name(self, frame: np.ndarray, text_x: int, text_y_baseline: int, name: str, emp_id: str, font_scale: float, font_thickness: int) -> None:
+        """Overlays a tick icon next to the recognized name and ID."""
         if self.tick_icon is None:
             return
-        # Resize icon to fit the face bounding box height, maintaining aspect ratio
-        icon_height = h
-        icon_width = int(self.tick_icon.shape[1] * (icon_height / self.tick_icon.shape[0]))
-        icon = cv2.resize(self.tick_icon, (icon_width, icon_height), interpolation=cv2.INTER_AREA)
 
-        if icon.shape[2] == 4:  # RGBA image – use alpha channel for blending
-            b, g, r, a = cv2.split(icon)
-            mask = cv2.merge((a, a, a)) / 255.0
+        text_to_measure = f"{name} ({emp_id})"
+        (text_width, text_height), _ = cv2.getTextSize(text_to_measure, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
 
-            # Calculate ROI for the icon (top-right corner of the face bounding box)
-            # Ensure the icon doesn't go out of bounds
-            roi_x_start = min(x + w - icon_width, frame.shape[1] - icon_width)
-            roi_y_start = min(y, frame.shape[0] - icon_height)
-            
-            # Ensure coordinates are non-negative
-            roi_x_start = max(0, roi_x_start)
-            roi_y_start = max(0, roi_y_start)
+        # Desired size for the tick icon (e.g., 25x25 pixels)
+        tick_icon_size = 25 # pixels
+        icon = cv2.resize(self.tick_icon, (tick_icon_size, tick_icon_size), interpolation=cv2.INTER_AREA)
 
-            roi = frame[roi_y_start : roi_y_start + icon_height, roi_x_start : roi_x_start + icon_width]
-            
-            # Blend the icon
-            blended = (roi * (1 - mask) + cv2.merge((b, g, r)) * mask).astype(np.uint8)
-            frame[roi_y_start : roi_y_start + icon_height, roi_x_start : roi_x_start + icon_width] = blended
+        # Calculate position for the tick mark
+        # Place it slightly to the right of the text, vertically centered with the text.
+        padding_x = 5 # pixels between text and tick
+        
+        icon_x_start = text_x + text_width + padding_x
+        # Calculate y-position to center the tick vertically with the text
+        # text_y_baseline is the bottom of the text. Top of text is text_y_baseline - text_height.
+        # Center of text is text_y_baseline - text_height / 2.
+        # Center of icon should be at text_center_y. So, icon_y_top = text_center_y - tick_icon_size / 2.
+        icon_y_start = text_y_baseline - text_height + (text_height - tick_icon_size) // 2
+
+        # Ensure the icon is within frame boundaries
+        h_frame, w_frame = frame.shape[:2]
+        icon_x_start = max(0, min(icon_x_start, w_frame - tick_icon_size))
+        icon_y_start = max(0, min(icon_y_start, h_frame - tick_icon_size))
+
+        # Ensure icon_x_start and icon_y_start are integers
+        icon_x_start = int(icon_x_start)
+        icon_y_start = int(icon_y_start)
+
+        # Get the ROI for blending
+        roi = frame[icon_y_start : icon_y_start + tick_icon_size, icon_x_start : icon_x_start + tick_icon_size]
+        
+        # Check if the ROI is valid (i.e., not out of bounds causing a slice of different size)
+        if roi.shape[0] == tick_icon_size and roi.shape[1] == tick_icon_size:
+            if icon.shape[2] == 4:  # RGBA image – use alpha channel for blending
+                b, g, r, a = cv2.split(icon)
+                mask = cv2.merge((a, a, a)) / 255.0
+                blended = (roi * (1 - mask) + cv2.merge((b, g, r)) * mask).astype(np.uint8)
+                frame[icon_y_start : icon_y_start + tick_icon_size, icon_x_start : icon_x_start + tick_icon_size] = blended
+            else:
+                Logger("[WARN] Tick icon is not RGBA; cannot perform alpha blending for tick next to name. Simple copy used.")
+                # Fallback: simple copy if no alpha channel
+                icon_to_place = cv2.cvtColor(icon, cv2.COLOR_BGRA2BGR) if icon.shape[2] == 4 else icon
+                frame[icon_y_start : icon_y_start + tick_icon_size, icon_x_start : icon_x_start + tick_icon_size] = icon_to_place
         else:
-            # For RGB images without alpha, just place it (less ideal for overlays)
-            Logger("[WARN] Tick icon is not RGBA; cannot perform alpha blending.")
-            # Fallback: simple copy if no alpha channel
-            icon_to_place = cv2.cvtColor(icon, cv2.COLOR_BGRA2BGR) if icon.shape[2] == 4 else icon
-            
-            roi_x_start = min(x + w - icon_width, frame.shape[1] - icon_width)
-            roi_y_start = min(y, frame.shape[0] - icon_height)
-            
-            roi_x_start = max(0, roi_x_start)
-            roi_y_start = max(0, roi_y_start)
-
-            frame[roi_y_start : roi_y_start + icon_height, roi_x_start : roi_x_start + icon_width] = icon_to_place
+            Logger(f"[WARN] ROI for tick icon is not the expected size. Skipping overlay. ROI shape: {roi.shape}")
 
 
 # ---------------------------------------------------------------------------
